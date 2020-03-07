@@ -35,11 +35,13 @@
 //                                                             //
 /////////////////////////////////////////////////////////////////
 
+import riscv_opcodes_pkg::*;
+import riscv_state_pkg::*;
+import riscv_du_pkg::*;
+
 module riscv_du #(
   parameter XLEN           = 32,
-  parameter INSTR_SIZE     = 32,
-  parameter BREAKPOINTS    = 3,
-  parameter EXCEPTION_SIZE = 12
+  parameter BREAKPOINTS    = 3
 )
 (
   input                           rstn,
@@ -50,7 +52,7 @@ module riscv_du #(
   input                           dbg_stall,
   input                           dbg_strb,
   input                           dbg_we,
-  input      [riscv_du_pkg::DBG_ADDR_SIZE -1:0] dbg_addr,
+  input      [DBG_ADDR_SIZE -1:0] dbg_addr,
   input      [XLEN          -1:0] dbg_dati,
   output reg [XLEN          -1:0] dbg_dato,
   output reg                      dbg_ack,
@@ -65,7 +67,7 @@ module riscv_du #(
   output reg                      du_we_frf,
   output reg                      du_we_csr,
   output reg                      du_we_pc,
-  output reg [riscv_du_pkg::DU_ADDR_SIZE-1:0] du_addr,
+  output reg [DU_ADDR_SIZE  -1:0] du_addr,
   output reg [XLEN          -1:0] du_dato,
   output     [              31:0] du_ie,
   input      [XLEN          -1:0] du_dati_rf,
@@ -78,11 +80,13 @@ module riscv_du #(
   input                           bu_flush,
                                   st_flush,
 
-  input      [INSTR_SIZE    -1:0] if_instr,
-                                  ex_instr,
-  input      [EXCEPTION_SIZE-1:0] ex_exception,
-  input      [XLEN          -1:0] ex_memadr,
-  input                           mem_ack,
+  input      [ILEN          -1:0] if_instr,
+                                  mem_instr,
+  input                           if_bubble,
+                                  mem_bubble,
+  input      [EXCEPTION_SIZE-1:0] mem_exception,
+  input      [XLEN          -1:0] mem_memadr,
+  input                           dmem_ack,
                                   ex_stall,
 /*
                                   mem_req,
@@ -97,8 +101,6 @@ module riscv_du #(
   //
   // Constants
   //
-  import riscv_pkg::*;
-  import riscv_du_pkg::*;
 
   typedef struct packed {
     logic       branch_break_ena; //each branch causes a switch to the debug environment
@@ -124,8 +126,8 @@ module riscv_du #(
 
   typedef struct packed {
     dbg_ctrl_struct  ctrl;
-    logic     [               31:0] ie,
-                                    cause;
+    logic     [               31:0] ie;
+    logic     [XLEN           -1:0] cause;
     dbg_hit_struct                  hit;
     bp_struct [MAX_BREAKPOINTS-1:0] bp;
   } dbg_struct;
@@ -364,27 +366,26 @@ endgenerate
     else if (|du_exceptions[31:16]) //Interrupts
     begin
         casex ( du_exceptions[31:16])
-          16'h???1 : dbg.cause <= (1 << (XLEN-1)) |  0;
-          16'h???2 : dbg.cause <= (1 << (XLEN-1)) |  1;
-          16'h???4 : dbg.cause <= (1 << (XLEN-1)) |  2;
-          16'h???8 : dbg.cause <= (1 << (XLEN-1)) |  3;
-          16'h??10 : dbg.cause <= (1 << (XLEN-1)) |  4;
-          16'h??20 : dbg.cause <= (1 << (XLEN-1)) |  5;
-          16'h??40 : dbg.cause <= (1 << (XLEN-1)) |  6;
-          16'h??80 : dbg.cause <= (1 << (XLEN-1)) |  7;
-          16'h?100 : dbg.cause <= (1 << (XLEN-1)) |  8;
-          16'h?200 : dbg.cause <= (1 << (XLEN-1)) |  9;
-          16'h?400 : dbg.cause <= (1 << (XLEN-1)) | 10;
-          16'h?800 : dbg.cause <= (1 << (XLEN-1)) | 11;
-          16'h1000 : dbg.cause <= (1 << (XLEN-1)) | 12;
-          16'h2000 : dbg.cause <= (1 << (XLEN-1)) | 13;
-          16'h4000 : dbg.cause <= (1 << (XLEN-1)) | 14;
-          16'h8000 : dbg.cause <= (1 << (XLEN-1)) | 15;
-          default  : dbg.cause <= (1 << (XLEN-1)) |  0;
+          16'h???1 : dbg.cause <= ('h1 << (XLEN-1)) |  0;
+          16'h???2 : dbg.cause <= ('h1 << (XLEN-1)) |  1;
+          16'h???4 : dbg.cause <= ('h1 << (XLEN-1)) |  2;
+          16'h???8 : dbg.cause <= ('h1 << (XLEN-1)) |  3;
+          16'h??10 : dbg.cause <= ('h1 << (XLEN-1)) |  4;
+          16'h??20 : dbg.cause <= ('h1 << (XLEN-1)) |  5;
+          16'h??40 : dbg.cause <= ('h1 << (XLEN-1)) |  6;
+          16'h??80 : dbg.cause <= ('h1 << (XLEN-1)) |  7;
+          16'h?100 : dbg.cause <= ('h1 << (XLEN-1)) |  8;
+          16'h?200 : dbg.cause <= ('h1 << (XLEN-1)) |  9;
+          16'h?400 : dbg.cause <= ('h1 << (XLEN-1)) | 10;
+          16'h?800 : dbg.cause <= ('h1 << (XLEN-1)) | 11;
+          16'h1000 : dbg.cause <= ('h1 << (XLEN-1)) | 12;
+          16'h2000 : dbg.cause <= ('h1 << (XLEN-1)) | 13;
+          16'h4000 : dbg.cause <= ('h1 << (XLEN-1)) | 14;
+          16'h8000 : dbg.cause <= ('h1 << (XLEN-1)) | 15;
+          default  : dbg.cause <= ('h1 << (XLEN-1)) |  0;
         endcase
     end
    
-
 
   //DBG BPCTRL / DBG BPDATA
 generate
@@ -427,12 +428,12 @@ endgenerate
    * Combinatorial generation of break-point hit logic
    * For actual registers see 'Registers' section
    */
-  assign bp_instr_hit  = dbg.ctrl.instr_break_ena  & (if_instr      != INSTR_NOP);
-  assign bp_branch_hit = dbg.ctrl.branch_break_ena & (if_instr[6:2] == OPC_BRANCH);
+  assign bp_instr_hit  = dbg.ctrl.instr_break_ena  & ~if_bubble;
+  assign bp_branch_hit = dbg.ctrl.branch_break_ena & ~if_bubble & (if_instr[6:2] == OPC_BRANCH);
 
   //Memory access
-  assign mem_read  = ~|ex_exception & (ex_instr[6:2] == OPC_LOAD );
-  assign mem_write = ~|ex_exception & (ex_instr[6:2] == OPC_STORE);
+  assign mem_read  = ~|mem_exception & ~mem_bubble & (mem_instr[6:2] == OPC_LOAD );
+  assign mem_write = ~|mem_exception & ~mem_bubble & (mem_instr[6:2] == OPC_STORE);
 
 generate
 for (n=0; n<MAX_BREAKPOINTS; n++)
@@ -446,9 +447,9 @@ begin: gen_bp_hit
         else
           case (dbg.bp[n].ctrl.cc)
              BP_CTRL_CC_FETCH    : bp_hit[n] = (if_pc     == dbg.bp[n].data) & ~bu_flush & ~st_flush;
-             BP_CTRL_CC_LD_ADR   : bp_hit[n] = (ex_memadr == dbg.bp[n].data) & mem_ack & mem_read;
-             BP_CTRL_CC_ST_ADR   : bp_hit[n] = (ex_memadr == dbg.bp[n].data) & mem_ack & mem_write;
-             BP_CTRL_CC_LDST_ADR : bp_hit[n] = (ex_memadr == dbg.bp[n].data) & mem_ack & (mem_read | mem_write);
+             BP_CTRL_CC_LD_ADR   : bp_hit[n] = (mem_memadr == dbg.bp[n].data) & dmem_ack & mem_read;
+             BP_CTRL_CC_ST_ADR   : bp_hit[n] = (mem_memadr == dbg.bp[n].data) & dmem_ack & mem_write;
+             BP_CTRL_CC_LDST_ADR : bp_hit[n] = (mem_memadr == dbg.bp[n].data) & dmem_ack & (mem_read | mem_write);
 /*
              BP_CTRL_CC_LD_ADR   : bp_hit[n] = (mem_adr == dbg.bp[n].data) & mem_req & ~mem_we;
              BP_CTRL_CC_ST_ADR   : bp_hit[n] = (mem_adr == dbg.bp[n].data) & mem_req &  mem_we;
