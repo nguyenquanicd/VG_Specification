@@ -41,33 +41,41 @@
 module testbench_top; 
 
 //core parameters
-parameter XLEN             = 64;
-parameter PHYS_ADDR_SIZE   = 32;           //32bit address bus. Also sets non-cacheable range
+parameter XLEN             = 32;
+parameter PLEN             = XLEN;         //32bit address bus
 parameter PC_INIT          = 'h8000_0000;  //Start here after reset
 parameter BASE             = PC_INIT;      //offset where to load program in memory
 parameter INIT_FILE        = "test.hex";
 parameter MEM_LATENCY      = 1;
-parameter WRITEBUFFER_SIZE = 8;
+parameter WRITEBUFFER_SIZE = 4;
 parameter HAS_U            = 1;
 parameter HAS_S            = 1;
 parameter HAS_H            = 0;
 parameter HAS_MMU          = 0;
 parameter HAS_FPU          = 0;
-parameter HAS_AMO          = 0;
-parameter HAS_MULDIV       = 0;
+parameter HAS_RVA          = 0;
+parameter HAS_RVM          = 0;
 parameter MULT_LATENCY     = 0;
 parameter CORES            = 1;
+
 parameter HTIF             = 0; //Host-interface
+parameter TOHOST           = 32'h80001000;
+parameter UART_TX          = 32'h80001080;
+
 
 //caches
 parameter ICACHE_SIZE      = 0;
 parameter DCACHE_SIZE      = 0;
+
+parameter PMA_CNT          = 4;
 
 
 //////////////////////////////////////////////////////////////////
 //
 // Constants
 //
+import riscv_state_pkg::*;
+import riscv_pma_pkg::*;
 import ahb3lite_pkg::*;
 
 localparam MULLAT = MULT_LATENCY > 4 ? 4 : MULT_LATENCY;
@@ -77,97 +85,170 @@ localparam MULLAT = MULT_LATENCY > 4 ? 4 : MULT_LATENCY;
 //
 // Variables
 //
-logic                      HCLK, HRESETn;
+logic            HCLK, HRESETn;
+
+//PMA configuration
+pmacfg_t         pma_cfg [PMA_CNT];
+logic [PLEN-1:0] pma_adr [PMA_CNT];
 
 //Instruction interface
-logic                      ins_HSEL;
-logic [PHYS_ADDR_SIZE-1:0] ins_HADDR;
-logic [XLEN          -1:0] ins_HRDATA;
-logic [XLEN          -1:0] ins_HWDATA; //always 0
-logic                      ins_HWRITE; //always 0
-logic [               2:0] ins_HSIZE;
-logic [               2:0] ins_HBURST;
-logic [               3:0] ins_HPROT;
-logic [               1:0] ins_HTRANS;
-logic                      ins_HMASTLOCK;
-logic                      ins_HREADY;
-logic                      ins_HRESP;
+logic            ins_HSEL;
+logic [PLEN-1:0] ins_HADDR;
+logic [XLEN-1:0] ins_HRDATA;
+logic [XLEN-1:0] ins_HWDATA; //always 0
+logic            ins_HWRITE; //always 0
+logic [     2:0] ins_HSIZE;
+logic [     2:0] ins_HBURST;
+logic [     3:0] ins_HPROT;
+logic [     1:0] ins_HTRANS;
+logic            ins_HMASTLOCK;
+logic            ins_HREADY;
+logic            ins_HRESP;
 
 //Data interface
-logic                      dat_HSEL;
-logic [PHYS_ADDR_SIZE-1:0] dat_HADDR;
-logic [XLEN          -1:0] dat_HWDATA;
-logic [XLEN          -1:0] dat_HRDATA;
-logic                      dat_HWRITE;
-logic [               2:0] dat_HSIZE;
-logic [               2:0] dat_HBURST;
-logic [               3:0] dat_HPROT;
-logic [               1:0] dat_HTRANS;
-logic                      dat_HMASTLOCK;
-logic                      dat_HREADY;
-logic                      dat_HRESP;
+logic            dat_HSEL;
+logic [PLEN-1:0] dat_HADDR;
+logic [XLEN-1:0] dat_HWDATA;
+logic [XLEN-1:0] dat_HRDATA;
+logic            dat_HWRITE;
+logic [     2:0] dat_HSIZE;
+logic [     2:0] dat_HBURST;
+logic [     3:0] dat_HPROT;
+logic [     1:0] dat_HTRANS;
+logic            dat_HMASTLOCK;
+logic            dat_HREADY;
+logic            dat_HRESP;
 
 //Debug Interface
-logic              dbp_bp,
-                   dbg_stall,
-                   dbg_strb,
-                   dbg_ack,
-                   dbg_we;
-logic [      15:0] dbg_addr;
-logic [XLEN  -1:0] dbg_dati,
-                   dbg_dato;
+logic            dbp_bp,
+                 dbg_stall,
+                 dbg_strb,
+                 dbg_ack,
+                 dbg_we;
+logic [    15:0] dbg_addr;
+logic [XLEN-1:0] dbg_dati,
+                 dbg_dato;
 
 
 
 //Host Interface
-logic                      host_csr_req,
-                           host_csr_ack,
-                           host_csr_we;
-logic [XLEN          -1:0] host_csr_tohost,
-                           host_csr_fromhost;
+logic            host_csr_req,
+                 host_csr_ack,
+                 host_csr_we;
+logic [XLEN-1:0] host_csr_tohost,
+                 host_csr_fromhost;
 
 
 //Unified memory interface
-logic [               1:0] mem_htrans[2];
-logic [               3:0] mem_hburst[2];
-logic                      mem_hready[2],
-                           mem_hresp[2];
-logic [PHYS_ADDR_SIZE-1:0] mem_haddr[2];
-logic [XLEN          -1:0] mem_hwdata[2],
-                           mem_hrdata[2];
-logic [               2:0] mem_hsize[2];
-logic                      mem_hwrite[2];
+logic [     1:0] mem_htrans[2];
+logic [     3:0] mem_hburst[2];
+logic            mem_hready[2],
+                 mem_hresp[2];
+logic [PLEN-1:0] mem_haddr[2];
+logic [XLEN-1:0] mem_hwdata[2],
+                 mem_hrdata[2];
+logic [     2:0] mem_hsize[2];
+logic            mem_hwrite[2];
 
 
 ////////////////////////////////////////////////////////////////
 //
 // Module Body
 //
+
+
+//Define PMA regions
+
+//crt.0 (ROM) region
+assign pma_adr[0]          = TOHOST >> 2;
+assign pma_cfg[0].mem_type = MEM_TYPE_MAIN;
+assign pma_cfg[0].r        = 1'b1;
+assign pma_cfg[0].w        = 1'b1; //this causes fence_i test to fail, which is expected/correct.
+                                   //Set to '1' for fence_i test
+assign pma_cfg[0].x        = 1'b1;
+assign pma_cfg[0].c        = 1'b1; //Should be '0'. Set to '1' to test dcache fence_i
+assign pma_cfg[0].cc       = 1'b0;
+assign pma_cfg[0].ri       = 1'b0;
+assign pma_cfg[0].wi       = 1'b0;
+assign pma_cfg[0].m        = 1'b0;
+assign pma_cfg[0].amo_type = AMO_TYPE_NONE;
+assign pma_cfg[0].a        = TOR;
+
+//TOHOST region
+assign pma_adr[1]          = ((TOHOST >> 2) & ~'hf) | 'h7;
+assign pma_cfg[1].mem_type = MEM_TYPE_IO;
+assign pma_cfg[1].r        = 1'b0;
+assign pma_cfg[1].w        = 1'b1;
+assign pma_cfg[1].x        = 1'b0;
+assign pma_cfg[1].c        = 1'b0;
+assign pma_cfg[1].cc       = 1'b0;
+assign pma_cfg[1].ri       = 1'b0;
+assign pma_cfg[1].wi       = 1'b0;
+assign pma_cfg[1].m        = 1'b0;
+assign pma_cfg[1].amo_type = AMO_TYPE_NONE;
+assign pma_cfg[1].a        = NAPOT;
+
+//UART-Tx region
+assign pma_adr[2]          = UART_TX >> 2;
+assign pma_cfg[2].mem_type = MEM_TYPE_IO;
+assign pma_cfg[2].r        = 1'b0;
+assign pma_cfg[2].w        = 1'b1;
+assign pma_cfg[2].x        = 1'b0;
+assign pma_cfg[2].c        = 1'b0;
+assign pma_cfg[2].cc       = 1'b0;
+assign pma_cfg[2].ri       = 1'b0;
+assign pma_cfg[2].wi       = 1'b0;
+assign pma_cfg[2].m        = 1'b0;
+assign pma_cfg[2].amo_type = AMO_TYPE_NONE;
+assign pma_cfg[2].a        = NA4;
+
+//RAM region
+assign pma_adr[3]          = 1 << 31;
+assign pma_cfg[3].mem_type = MEM_TYPE_MAIN;
+assign pma_cfg[3].r        = 1'b1;
+assign pma_cfg[3].w        = 1'b1;
+assign pma_cfg[3].x        = 1'b1;
+assign pma_cfg[3].c        = 1'b1;
+assign pma_cfg[3].cc       = 1'b0;
+assign pma_cfg[3].ri       = 1'b0;
+assign pma_cfg[3].wi       = 1'b0;
+assign pma_cfg[3].m        = 1'b0;
+assign pma_cfg[3].amo_type = AMO_TYPE_NONE;
+assign pma_cfg[3].a        = TOR;
+
+
 //Hookup Device Under Test
-
-
 riscv_top_ahb3lite #(
   .XLEN             ( XLEN             ),
-  .PHYS_ADDR_SIZE   ( PHYS_ADDR_SIZE   ), //31bit address bus
+  .PLEN             ( PLEN             ), //31bit address bus
   .PC_INIT          ( PC_INIT          ),
   .HAS_USER         ( HAS_U            ),
   .HAS_SUPER        ( HAS_S            ),
   .HAS_HYPER        ( HAS_H            ),
-  .HAS_AMO          ( HAS_AMO          ),
-  .HAS_MULDIV       ( HAS_MULDIV       ),
+  .HAS_RVA          ( HAS_RVA          ),
+  .HAS_RVM          ( HAS_RVM          ),
   .MULT_LATENCY     ( MULLAT           ),
 
-  .WRITEBUFFER_SIZE ( WRITEBUFFER_SIZE ),
+  .PMA_CNT          ( PMA_CNT          ),
   .ICACHE_SIZE      ( ICACHE_SIZE      ),
+  .ICACHE_WAYS      ( 1                ),
   .DCACHE_SIZE      ( DCACHE_SIZE      ),
+  .DTCM_SIZE        ( 0                ),
+  .WRITEBUFFER_SIZE ( WRITEBUFFER_SIZE ),
 
   .MTVEC_DEFAULT    ( 32'h80000004     )
 )
 dut (
-  .ext_nmi  ( 1'b0 ),
-  .ext_tint ( 1'b0 ),
-  .ext_sint ( 1'b0 ),
-  .ext_int  ( 4'h0 ),
+  .HRESETn   ( HRESETn ),
+  .HCLK      ( HCLK    ),
+
+  .pma_cfg_i ( pma_cfg ),
+  .pma_adr_i ( pma_adr ),
+
+  .ext_nmi   ( 1'b0    ),
+  .ext_tint  ( 1'b0    ),
+  .ext_sint  ( 1'b0    ),
+  .ext_int   ( 4'h0    ),
 
   .*
  ); 
@@ -216,11 +297,11 @@ assign dat_HRESP     = mem_hresp[1];
 
 //hookup memory model
 memory_model_ahb3lite #(
-  .DATA_WIDTH ( XLEN           ),
-  .ADDR_WIDTH ( PHYS_ADDR_SIZE ),
-  .BASE       ( BASE           ),
-  .PORTS      (              2 ),
-  .LATENCY    ( MEM_LATENCY    ) )
+  .DATA_WIDTH ( XLEN        ),
+  .ADDR_WIDTH ( PLEN        ),
+  .BASE       ( BASE        ),
+  .PORTS      (           2 ),
+  .LATENCY    ( MEM_LATENCY ) )
 unified_memory (
   .HRESETn ( HRESETn ),
   .HCLK   ( HCLK       ),
@@ -253,7 +334,7 @@ generate
   else
   begin
       //New MMIO interface
-      mmio_if #(XLEN, PHYS_ADDR_SIZE, 32'h80001000)
+      mmio_if #(XLEN, PLEN, TOHOST, UART_TX)
       mmio_if_inst (
         .HRESETn ( HRESETn ),
         .HCLK    ( HCLK    ),
@@ -281,10 +362,10 @@ begin
     $display (" |  |\\  \\ ' '-' '\\ '-'  |    |  '--.' '-' ' '-' ||  |\\ `--. ");
     $display (" `--' '--' `---'  `--`--'    `-----' `---' `-   /`--' `---' ");
     $display ("- RISC-V Regression Testbench -----------  `---'  ----------");
-    $display ("  XLEN | PRIV | MMU | FPU | AMO | MDU | MULLAT | CORES  ");
+    $display ("  XLEN | PRIV | MMU | FPU | RVA | RVM | MULLAT | CORES  ");
     $display ("   %3d | %C%C%C%C | %3d | %3d | %3d | %3d | %6d | %3d   ", 
                XLEN, "M", HAS_H > 0 ? "H" : " ", HAS_S > 0 ? "S" : " ", HAS_U > 0 ? "U" : " ",
-               HAS_MMU, HAS_FPU, HAS_AMO, HAS_MULDIV, MULLAT, CORES);
+               HAS_MMU, HAS_FPU, HAS_RVA, HAS_RVM, MULLAT, CORES);
     $display ("-------------------------------------------------------------");
     $display ("  Test   = %s", INIT_FILE);
     $display ("  ICache = %0dkB", ICACHE_SIZE);
@@ -298,7 +379,9 @@ begin
     $display("INFO: Signal dump enabled ...\n\n");
 `endif
 
-  unified_memory.read_elf2hex(INIT_FILE);
+//  unified_memory.read_elf2hex(INIT_FILE);
+  unified_memory.read_ihex(INIT_FILE);
+//  unified_memory.dump;
 
   HCLK  = 'b0;
 
@@ -309,21 +392,22 @@ begin
   HRESETn = 'b1;
 
 
-  #100;
+  #112;
   //stall CPU
   dbg_ctrl.stall;
 
   //Enable BREAKPOINT to call external debugger
-//  dbg_ctrl.write('h27D4,'h0008);
+//  dbg_ctrl.write('h0004,'h0008);
 
   //Enable Single Stepping
-  dbg_ctrl.write('h27D0,'h1000);
+  dbg_ctrl.write('h0000,'h0001);
 
   //single step through 10 instructions
   repeat (100)
   begin
       while (!dbg_ctrl.stall_cpu) @(posedge HCLK);
       repeat(15) @(posedge HCLK);
+      dbg_ctrl.write('h0001,'h0000); //clear single-step-hit
       dbg_ctrl.unstall;
   end
 
@@ -331,7 +415,8 @@ begin
   @(posedge HCLK);
   while (!dbg_ctrl.stall_cpu) @(posedge HCLK);
   //disable Single Stepping
-  dbg_ctrl.write('h27D0,'h0000);
+  dbg_ctrl.write('h0000,'h0000);
+  dbg_ctrl.write('h0001,'h0000);
   dbg_ctrl.unstall;
 
 end		
@@ -344,9 +429,10 @@ endmodule
  * MMIO Interface
  */
 module mmio_if #(
-  parameter HDATA_SIZE = 32,
-  parameter HADDR_SIZE = 32,
-  parameter CATCH_ADDR = 80001000
+  parameter HDATA_SIZE    = 32,
+  parameter HADDR_SIZE    = 32,
+  parameter CATCH_TEST    = 80001000,
+  parameter CATCH_UART_TX = 80001080
 )
 (
   input                       HRESETn,
@@ -367,7 +453,9 @@ module mmio_if #(
   // Variables
   //
   logic [HDATA_SIZE-1:0] data_reg;
-  logic                  catch;
+  logic                  catch_test,
+                         catch_uart_tx;
+
 
   logic [           1:0] dHTRANS;
   logic [HADDR_SIZE-1:0] dHADDR;
@@ -422,18 +510,32 @@ module mmio_if #(
 
 
   always @(posedge HCLK,negedge HRESETn)
-    if (!HRESETn) catch     <= 1'b0;
+    if (!HRESETn)
+    begin
+         catch_test    <= 1'b0;
+         catch_uart_tx <= 1'b0;
+    end
     else
     begin
-        catch <= dHTRANS == HTRANS_NONSEQ && dHWRITE && dHADDR == CATCH_ADDR;
-        data_reg  <= HWDATA;
+        catch_test    <= dHTRANS == HTRANS_NONSEQ && dHWRITE && dHADDR == CATCH_TEST;
+        catch_uart_tx <= dHTRANS == HTRANS_NONSEQ && dHWRITE && dHADDR == CATCH_UART_TX;
+        data_reg      <= HWDATA;
     end
 
 
-  //Generate output
+  /*
+   * Generate output
+   */
+
+  //Simulated UART Tx (prints characters on screen)
+  always @(posedge HCLK)
+    if (catch_uart_tx) $write ("%0c", data_reg);
+
+
+  //Tests ...
   always @(posedge HCLK)
   begin
-      if (watchdog_cnt > 200_000 || catch)
+      if (watchdog_cnt > 1000_000 || catch_test)
       begin
           $display("\n\n");
           $display("-------------------------------------------------------------");
@@ -450,7 +552,8 @@ module mmio_if #(
             $display("-------------------------------------------------------------");
           $display("\n");
 
-          $finish();
+          //$finish();
+		  $stop();
       end
   end
 endmodule
